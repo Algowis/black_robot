@@ -1,0 +1,741 @@
+CAN Command: Temperature Telemetry
+Purpose:
+Periodically report motor and controller temperatures to the master for monitoring and logging.
+
+CAN Frame Specification:
+CAN ID: 0x2D0 + NodeID (e.g., 0x2D2 for front driver, 0x2D4 for rear driver)
+Direction: Motor Driver * Master
+
+Payload:
+Byte
+
+Field
+
+Type
+
+Description
+
+0-1
+
+MotorTempLeft
+
+int16
+
+Left motor temperature (°C
+× 10)
+
+2-3
+
+MotorTempRight
+
+int16
+
+Right motor temperature
+(°C × 10)
+
+4
+
+MosfetTempLeft
+
+int8
+
+Left MOSFET temperature
+(°C)
+
+5
+
+MosfetTempRight
+
+int8
+
+Right MOSFET
+temperature (°C)
+
+6
+
+CpuTemp
+
+int8
+
+Controller CPU
+temperature (°C)
+
+7
+
+Reserved
+
+uint8
+
+Reserved for future use
+
+Action:
+Sent periodically (e.g., every 100 ms) or on master request.
+
+Notes:
+All values are instantaneous readings.
+
+CAN Command: Report Odometer and Average Current
+Purpose:
+Periodically report total odometer (mileage) and average current to the master.
+
+CAN Frame Specification:
+CAN ID:
+(e.g.,
+for front,
+for rear)
+Direction: Motor Driver * Master
+
+Payload: {#payload-2}
+Byte
+
+Field
+
+Type
+
+Description
+
+0-3
+
+U32Global_OdoMilage
+
+uint32
+
+Total odometer,
+meters
+
+4-5
+
+U16Global_TripMilage
+
+uint16
+
+Trip odometer,
+meters
+
+6-7
+
+S32Global_AvrCurrentConvert
+
+int16
+
+Average phase
+current, mA
+
+Action:
+Sent periodically every 1000 ms or on master request.
+
+CAN Command: System History Read Error
+CAN ID:
+(e.g.,
+for front,
+for rear)
+Direction: Motor Driver * Master
+Payload:
+Byte
+
+Field
+
+Type
+
+Description
+
+0
+
+fGlobal_ReadSystemHistoryInformationErr
+
+uint8
+
+1 Error, 0 OK
+
+CAN Command: DriveCommand
+Purpose:
+Unified command to control both left and right motors with a single message, including throttle
+and mode.
+
+CAN Frame Specification:
+CAN ID: 0x300 + NodeID (e.g., 0x302 for front, 0x304 for rear) Direction: Master → Motor
+Driver
+
+Payload:
+Byt
+e
+
+Field
+
+Type
+
+Description
+
+0-1
+
+ThrottleLeft
+
+int16
+
+-1000 (max reverse) to +1000 (max forward), 0=no power
+
+2-3
+
+ThrottleRight
+
+int16
+
+-1000 (max reverse) to +1000 (max forward), 0=no power
+
+4
+
+MotorMode
+
+uint8
+
+Bits 0–1: Motor mode (see table below); Bit 2:
+DisableBraking (see table below); Bits 3–7: Reserved (set
+to 0)
+
+5-6
+
+Limit
+
+uint1
+6
+
+If MotorMode is Speed, Limit = MaxTorque (nM). If
+MotorMode is Torque, Limit = MaxSpeed (RPM).
+
+7
+
+Reserved
+
+—
+
+Reserved for future use
+
+MotorMode Bit Allocation (Byte 4)
+Bit
+s
+
+Valu
+e
+
+Name
+
+Description
+
+0–1
+
+00
+
+No mode
+
+No mode selected
+
+0–1
+
+01
+
+Speed
+
+Speed control mode
+
+0–1
+
+10
+
+Torque
+
+Torque control mode
+
+0–1
+
+11
+
+—
+
+Reserved
+
+2
+
+0
+
+—
+
+Braking enabled
+
+2
+
+1
+
+DisableBraking
+
+Braking disabled
+
+3–7
+
+—
+
+Reserved
+
+Set to 0
+
+Note:
+●​ The meaning of the Limit field depends on the MotorMode:
+○​ If MotorMode is Speed (01): Limit sets the maximum allowed torque (in nM).
+○​ If MotorMode is Torque (10): Limit sets the maximum allowed speed (in RPM).
+●​ Every reserved field must be set to 0.
+●​ For DisableBraking (bit 2): 0 = Braking disabled, 1 = Braking enabled.
+●​ When receiving DisableBraking in the ExtendedPower command, the driver must release
+the regenerative brake.
+
+CAN Command: SpeedTelemetry
+Purpose:
+Unified telemetry response for speed and torque.
+
+CAN Frame Specification:
+CAN ID: 0x310 + NodeID (e.g., 0x312 for front, 0x314 for rear) Direction: Motor Driver →
+Master
+
+Payload:
+Byt
+e
+
+Field
+
+Type
+
+Description
+
+0-1
+
+SpeedLeft
+
+int16
+
+Left motor speed (RPM)
+
+2-3
+
+SpeedRight
+
+int16
+
+Right motor speed (RPM)
+
+4-5
+
+TorqueLeft
+
+int16
+
+Left motor torque (nM)
+
+6-7
+
+TorqueRight
+
+int16
+
+Right motor torque (nM)
+
+CAN Command: MotorTelemetry
+Purpose:
+Report power usage statistics for the system and each motor.
+
+CAN Frame Specification:
+CAN ID: 0x320 + NodeID (e.g., 0x322 for front, 0x324 for rear) Direction: Motor Driver →
+Master
+
+Payload:
+Byt
+e
+
+Field
+
+Type
+
+Description
+
+0
+
+TotalAmps
+
+int8
+
+Total current (A × 1)
+
+1-2
+
+TotalVoltage
+
+uint1
+6
+
+Total voltage (V × 10, 0.1V precision)
+
+3
+
+RightMotorAmp
+s
+
+int8
+
+Right motor current (A × 1)
+
+4
+
+LeftMotorAmps
+
+int8
+
+Left motor current (A × 1)
+
+5
+
+FaultLevel
+
+uint8
+
+Fault level/status code (see table below)
+
+6
+
+MotorMode
+
+uint8
+
+Bits 0–1: Motor mode (see table below); Bit 2:
+DisableBraking (see table below); Bits 3–7: Reserved
+(set to 0)
+
+7
+
+Reserved
+
+—
+
+Reserved for future use
+
+MotorMode Bit Allocation (Byte 6)
+Bit
+s
+
+Valu
+e
+
+Name
+
+Description
+
+0–1
+
+00
+
+No mode
+
+No mode selected
+
+0–1
+
+01
+
+Speed
+
+Speed control mode
+
+0–1
+
+10
+
+Torque
+
+Torque control mode
+
+0–1
+
+11
+
+—
+
+Reserved
+
+2
+
+0
+
+—
+
+Braking enabled
+
+2
+
+1
+
+DisableBraking
+
+Braking disabled
+
+3
+
+0
+
+—
+
+Left motor is Not braking
+
+3
+
+1
+
+brakingMotorLeft
+
+Left motor regenerative braking active
+
+4
+
+0
+
+—
+
+Left motor not standing
+
+4
+
+1
+
+StandingMotorLeft
+
+Left motor RPM < MIN_RPM_STANDING
+
+5
+
+0
+
+—
+
+Right motor not braking
+
+5
+
+1
+
+BrakingMotorRight
+
+Right motor regenerative braking active
+
+6
+
+0
+
+—
+
+Right motor not standing
+
+6
+
+1
+
+StandingMotorRight
+
+Right motor RPM <
+MIN_RPM_STANDING
+
+7
+
+—
+
+Reserved
+
+Set to 0
+
+FaultLevel Values (Byte 5)
+Value
+
+Meaning
+
+0
+
+None (no fault)
+
+1
+
+Warning (starting to be hot)
+
+2
+
+Degraded (performance reduced, e.g., due to "MotorStartProtectT")
+
+3
+
+Stopping (initiating stop due to "MotorEndProtectT")
+
+4
+
+Stopped (fully stopped due to "MotorEndProtectT" or other critical
+condition)
+
+5-255
+
+Reserved
+
+Note:
+●​ Every reserved field must be set to 0.
+●​ For DisableBraking (bit 2): 0 = enabled, 1 = disabled.
+●​ For brakingMotorLeft (bit 3): 0 = Left motor not braking, 1 = Left motor regenerative
+braking active.
+●​ For StandingMotorLeft (bit 4): 1 = Left motor RPM is less than MIN_RPM_STANDING (as
+set in code).
+●​ For StandingMotorRight (bit 5): 1 = Right motor RPM is less than MIN_RPM_STANDING
+(as set in code).
+●​ For brakingMotorRight (bit 6): 0 = Right motor not braking, 1 = Right motor regenerative
+braking active.
+
+CAN Command: CurrentLimitCmd
+Description:
+Sets the maximum discharge and charge current limits for the motor driver.
+
+Direction:
+Master → Motor Driver
+
+CAN Frame Specification:
+CAN ID: 0x400 + NodeID (e.g., 0x412 for front, 0x414 for rear) Direction: Master → Motor
+Driver Sent: On command or periodically (e.g., every 100 ms) if limits are being actively
+managed
+
+Payload:
+Byt
+e
+
+Field
+
+Type
+
+Description
+
+0-1
+
+DCL
+
+uint1
+6
+
+Discharge current limit (mA): max current the driver can draw
+from the batteries. Range: 0...65535 mA
+
+2-3
+
+CCL
+
+uint1
+6
+
+Charge current limit (mA): max current the driver can push to
+the batteries. Range: 0...65535 mA
+
+4
+
+Reserve
+d
+
+—
+
+Reserved for future use
+
+5
+
+Reserve
+d
+
+—
+
+Reserved for future use
+
+6
+
+Reserve
+d
+
+—
+
+Reserved for future use
+
+7
+
+Reserve
+d
+
+—
+
+Reserved for future use
+
+CAN Command: AlarmsFaultsRpt
+Description:
+Periodically reports active alarms and fault codes to the master.
+
+Direction:
+Motor Driver → Master
+
+CAN Frame Specification:
+CAN ID: 0x500 + NodeID (e.g., 0x512 for front, 0x514 for rear) Direction: Motor Driver →
+Master Sent: Periodically every 100 ms
+
+Payload:
+Byt
+e
+
+Field
+
+Type
+
+Description
+
+0-1
+
+CpuFaultCode
+
+uint1
+6
+
+Highest CPU fault code (or bitmask of CPU
+faults).
+
+2-3
+
+MotorLeftFaultC
+ode
+
+uint1
+6
+
+Highest left motor fault code (or bitmask).
+
+4-5
+
+MotorRightFault
+Code
+
+uint1
+6
+
+Highest right motor fault code (or bitmask).
+
+6
+
+Reserved
+
+—
+
+Reserved for future use.
+
+7
+
+Reserved
+
+—
+
+Reserved for future use.
+
+Note:
+●​ Fault code fields may be used as either a single code or a bitmask, depending on system
+design.
+●​ Reserved bytes must be set to 0.
+
+

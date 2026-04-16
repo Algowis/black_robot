@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Black Robot Controller
+Comment=Launch the GG Vehicle GUI on Steam Deck
+Exec=bash -c 'APP_DIR="/home/deck/gg_vehicle" && cd "$APP_DIR" && source "$APP_DIR/venv/bin/activate" && python "$APP_DIR/vehicle_gui.py"; exec bash'
+Icon=video-display
+Terminal=true
+Type=Application
+Categories=Utility;Game;

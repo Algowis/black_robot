@@ -1,0 +1,29 @@
+# Black Robot — Vehicle Controller Service
+# 
+# Install on the Jetson with:
+#   sudo cp robot-logic.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable robot-logic.service
+#   sudo systemctl start robot-logic.service
+#
+# Useful commands:
+#   sudo systemctl status robot-logic   → check if running
+#   sudo journalctl -u robot-logic -f   → live logs
+#   sudo systemctl restart robot-logic  → restart it
+
+[Unit]
+Description=Black Robot Vehicle Controller
+After=network.target
+
+[Service]
+Type=simple
+User=nvidia
+WorkingDirectory=/home/nvidia/gg_vehicle
+ExecStart=/usr/bin/python3 /home/nvidia/gg_vehicle/main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
