@@ -121,22 +121,23 @@ class ROS2DriveBridge(Node):
         if gear in (Gear.NEUTRAL, Gear.PARKING) or throttle_norm < 0.01:
             # ── Mode 1: Pivot in place (No throttle applied) ──────────────── #
             # Throttle is ignored. Steer stick controls rotation speed/direction.
-            # Jetson receives drive=0, full steer → pure differential pivot.
+            # We scale the pivot speed by the --speed flag so it isn't too aggressive.
             throttle_pwm = _SERVO_NEUTRAL
-            steer_pwm    = int(_clamp(_SERVO_NEUTRAL + steer * 500, _SERVO_MIN, _SERVO_MAX))
+            steer_pwm    = int(_clamp(_SERVO_NEUTRAL + (steer * speed) * 500, _SERVO_MIN, _SERVO_MAX))
 
         else:
             # ── Mode 2: Bounded skid-steer arc turn ───────────────────────── #
             # Outer motor maintains base drive speed.
-            # Inner motor reverses proportionally to steer to overcome track friction.
+            # Inner motor reduces proportionally down to 0 at full steer.
+            # (Matches developer's example: 50 Left, 100 Right for a left turn)
             direction = 1.0 if gear == Gear.FORWARD else -1.0
             drive = direction * throttle_norm * speed
             
             if steer > 0:
                 raw_l = drive
-                raw_r = drive - 2.0 * steer * drive
+                raw_r = drive * (1.0 - abs(steer))
             else:
-                raw_l = drive + 2.0 * steer * drive
+                raw_l = drive * (1.0 - abs(steer))
                 raw_r = drive
                 
             drive_input = (raw_l + raw_r) / 2.0

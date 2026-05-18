@@ -42,7 +42,7 @@ MODE_TORQUE_BRAKE_ON  = 0x02 # Constant force mode. Active braking enabled.
 MODE_TORQUE_BRAKE_OFF = 0x06 # Constant force mode. Braking disabled.
 
 # --- Limits ---
-TORQUE_LIMIT = 20            # Maximum torque allowed (nM)
+TORQUE_LIMIT = 500           # Maximum torque allowed (nM) - 0x01F4 per developer spec
 
 
 # ==============================================================================
