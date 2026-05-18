@@ -570,48 +570,39 @@ class VehicleController:
 # ═══════════════════════════════════════════════
 class GamepadManager:
     """
-    Reads Steam Deck gamepad via pygame.
+    Reads Razer Wolverine V2 gamepad via pygame.
 
-    Control Mapping:
+    Control Mapping (Black Robot skid-steer):
     ─────────────────────────────────────────
-    Right Stick Y   → Throttle (up=fwd)
-    Left Stick X    → Steering (mode-dep.)
+    Right Trigger   → Forward drive   (idle=+1, full=-1 in pygame)
+    Left Trigger    → Reverse drive   (idle=+1, full=-1 in pygame)
+    Right Stick X   → Steer left/right
+    D-Pad X (axis)  → Speed cap ±5%   (right=+1 = faster)
 
-    Y button        → Mode: FRONT ONLY
-    X button        → Mode: FRONT + BACK
-    A button        → Mode: BACK ONLY
-
+    LB              → Toggle gear LOW/HIGH
     B button        → Cycle camera view
-
-    LB              → Toggle gear
-    RB              → Toggle lights
     ─────────────────────────────────────────
+    Note: steering mode buttons (Y/X/A) are not used on skid-steer.
     """
 
-    # Steam Deck Xbox mode axis indices:
-    #     0 = Left X, 1 = Left Y
-    #     2 = Right X (or LT), 3 = Right Y (or RT)
-    # Varies by SDL mapping — adjust AXIS_* constants if needed.
-    
-    AXIS_LEFT_X  = 0
-    AXIS_LEFT_Y  = 1
-    AXIS_RIGHT_X = 2
-    AXIS_RIGHT_Y = 3
+    # Razer Wolverine V2 axis indices (standard XInput mapping via pygame):
+    AXIS_LEFT_TRIGGER  = 2   # +1.0 idle → -1.0 full press
+    AXIS_RIGHT_TRIGGER = 5   # +1.0 idle → -1.0 full press
+    AXIS_RIGHT_STICK_X = 3   # -1.0 = left, +1.0 = right
+    AXIS_DPAD_X        = 6   # -1.0 = left, +1.0 = right
 
-    # Virtual Indices produced by your specific Steam Input Profile
-    # Physical Controller -> Virtual Index emitted to Python
-    STEAM_PHYS_A      = 3  # (Observed triggering Gear previously)
-    STEAM_PHYS_3DOTS  = 2  # (Observed triggering Lights previously)
-    STEAM_PHYS_L_PAD  = 0  # (Observed triggering Steer previously)
-    STEAM_PHYS_X      = 5  # (Observed triggering Lights in original setup)
-    STEAM_PHYS_B      = 4  # (Observed triggering Gear in original setup)
-    
-    # We will accept any standard "Camera" button for physical Y 
-    # since we don't know its exact virtual index in your profile:
-    STEAM_PHYS_Y      = 6
+    # Button indices (Razer Wolverine V2 via XInput)
+    BTN_LB = 4   # Left bumper  → toggle gear
+    BTN_B  = 1   # B button     → cycle camera
 
-    # UI updates — throttle ramp step per 60Hz tick
-    THROTTLE_RAMP_RATE = 8  # ~2s ramp from neutral to full (halved for smoother accel/decel)
+    # Speed cap — adjusted by D-Pad X (matches joystick_ros_bridge.py)
+    SPEED_DEFAULT = 0.30
+    SPEED_STEP    = 0.05
+    SPEED_MIN     = 0.05
+    SPEED_MAX     = 1.00
+    STEER_SCALE   = 1.00   # steer NOT capped by speed (pivot needs full torque)
+
+    DEADZONE = 0.05
 
     def __init__(self, controller: VehicleController, deadzone: float = 0.10,
                  on_cycle_camera: Optional[Callable[[], None]] = None):
@@ -656,6 +647,8 @@ class GamepadManager:
     def _poll_loop(self):
         import pygame
         clock = pygame.time.Clock()
+        prev_dpad_x = 0.0
+        speed_scale = self.SPEED_DEFAULT
 
         while self._running:
             for event in pygame.event.get():
@@ -663,70 +656,57 @@ class GamepadManager:
                     self._handle_button(event.button)
 
             if self.joystick:
-                # Right Stick Y → Throttle (invert: up = -1 in pygame, should be forward)
-                right_y = self.joystick.get_axis(self.AXIS_RIGHT_Y)
-                target_throttle_pwm = axis_to_servo(-right_y, self.deadzone)
+                # ── Triggers → drive (matching joystick_ros_bridge.py) ── #
+                # Triggers: +1.0 idle, -1.0 fully pressed → unit = (1 - raw) / 2
+                rt = (1.0 - self.joystick.get_axis(self.AXIS_RIGHT_TRIGGER)) / 2.0
+                lt = (1.0 - self.joystick.get_axis(self.AXIS_LEFT_TRIGGER))  / 2.0
 
-                # Left Stick X → Steering (mode-dependent)
-                left_x = self.joystick.get_axis(self.AXIS_LEFT_X)
-                back_steer_pwm = axis_to_servo(left_x, self.deadzone)
-                front_steer_pwm = axis_to_servo(-left_x, self.deadzone)  # inverted
+                if rt > self.DEADZONE:
+                    drive = rt * speed_scale
+                elif lt > self.DEADZONE:
+                    drive = -lt * speed_scale
+                else:
+                    drive = 0.0
 
-                # Update throttle + steering atomically to prevent the TX
-                # loop from grabbing a half-updated state on rapid changes.
+                # ── Right Stick X → steer (full range, not speed-capped) ── #
+                steer_raw = self.joystick.get_axis(self.AXIS_RIGHT_STICK_X)
+                steer = steer_raw * self.STEER_SCALE if abs(steer_raw) > self.DEADZONE else 0.0
+
+                # ── D-Pad X → speed cap adjustment (edge-detected) ── #
+                dpad_x = self.joystick.get_axis(self.AXIS_DPAD_X)
+                if dpad_x != prev_dpad_x:
+                    if dpad_x > 0.5:
+                        speed_scale = min(self.SPEED_MAX, speed_scale + self.SPEED_STEP)
+                        print(f"[SPEED] ▲  {speed_scale*100:.0f}%")
+                    elif dpad_x < -0.5:
+                        speed_scale = max(self.SPEED_MIN, speed_scale - self.SPEED_STEP)
+                        print(f"[SPEED] ▼  {speed_scale*100:.0f}%")
+                    prev_dpad_x = dpad_x
+
+                # ── Convert to PWM and write atomically ── #
+                throttle_pwm = int(_clamp(SERVO_NEUTRAL + drive * 500, SERVO_MIN, SERVO_MAX))
+                steer_pwm    = int(_clamp(SERVO_NEUTRAL + steer * 500, SERVO_MIN, SERVO_MAX))
+
                 with self.controller._lock:
-                    mode = self.controller.control.steering_mode
-                    
-                    # Throttle ramping (smooth acceleration/deceleration)
-                    current_throttle = getattr(self.controller.control, 'throttle', SERVO_NEUTRAL)
-                    if target_throttle_pwm > current_throttle:
-                        new_throttle = min(current_throttle + self.THROTTLE_RAMP_RATE, target_throttle_pwm)
-                    elif target_throttle_pwm < current_throttle:
-                        new_throttle = max(current_throttle - self.THROTTLE_RAMP_RATE, target_throttle_pwm)
-                    else:
-                        new_throttle = target_throttle_pwm
-                        
-                    self.controller.control.throttle = int(_clamp(new_throttle, SERVO_MIN, SERVO_MAX))
-
-                    if mode == SteeringMode.FRONT_ONLY:
-                        self.controller.control.front_steering = int(_clamp(front_steer_pwm, SERVO_MIN, SERVO_MAX))
-                        self.controller.control.back_steering  = SERVO_NEUTRAL
-                    elif mode == SteeringMode.FRONT_AND_BACK:
-                        self.controller.control.front_steering = int(_clamp(front_steer_pwm, SERVO_MIN, SERVO_MAX))
-                        self.controller.control.back_steering  = int(_clamp(back_steer_pwm, SERVO_MIN, SERVO_MAX))
-                    elif mode == SteeringMode.BACK_ONLY:
-                        self.controller.control.front_steering = SERVO_NEUTRAL
-                        self.controller.control.back_steering  = int(_clamp(back_steer_pwm, SERVO_MIN, SERVO_MAX))
+                    self.controller.control.throttle       = throttle_pwm
+                    self.controller.control.front_steering = steer_pwm
+                    self.controller.control.back_steering  = SERVO_NEUTRAL
 
             clock.tick(60)
 
     def _handle_button(self, button: int):
-        # Using the reverse-engineered Steam Profile indices to achieve the Purple Image layout
-
-        if button == self.STEAM_PHYS_A:
-            # Physical A Button -> Cycle steering modes
-            current = self.controller.control.steering_mode
-            if current == SteeringMode.FRONT_ONLY:
-                self.controller.set_steering_mode(SteeringMode.BACK_ONLY)
-            elif current == SteeringMode.BACK_ONLY:
-                self.controller.set_steering_mode(SteeringMode.FRONT_AND_BACK)
-            else:
-                self.controller.set_steering_mode(SteeringMode.FRONT_ONLY)
-                
-        elif button == self.STEAM_PHYS_Y:
-            # Physical Y Button -> Toggle Gear
+        if button == self.BTN_LB:
+            # Left Bumper → toggle gear LOW / HIGH
             self.controller.toggle_gear()
-            
-        elif button == self.STEAM_PHYS_X:
-            # Physical X Button -> Toggle Lights
-            self.controller.toggle_lights()
-            
-        elif button == self.STEAM_PHYS_3DOTS:
-            # Physical 3-dots Button -> Cycle Camera
+            gear = "LOW" if self.controller.control.gear_low else "HIGH"
+            print(f"[GEAR] → {gear}")
+
+        elif button == self.BTN_B:
+            # B button → cycle camera
             if self.on_cycle_camera:
                 self.on_cycle_camera()
-                
-        # Any other button (B, Trackpads, etc) intentionally ignored
+
+        # All other buttons intentionally ignored (no steering modes on skid-steer)
 
 
 # ═══════════════════════════════════════════════

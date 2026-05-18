@@ -20,11 +20,20 @@ black_robot/
 │   ├── can_transmitter.py     ← Sends DriveCommand CAN frames
 │   ├── can_telemetry.py       ← Reads speed/temp/power CAN telemetry
 │   ├── udp_receiver.py        ← Receives joystick commands via UDP
-│   └── shared_state.py        ← Thread-safe state container
+│   ├── shared_state.py        ← Thread-safe state container
+│   ├── robot_config.py        ← CAN protocol IDs, parameters, fault levels
+│   └── robot-logic.service    ← Systemd service file for main.py
 ├── laptop/                    ← Code that runs on the operator laptop
 │   └── joystick_sim.py        ← Keyboard → UDP joystick simulator
-└── tools/                     ← Measurement & calibration scripts
-    └── measure_vmax.py        ← V_max measurement (run on robot, lifted)
+├── tools/                     ← Measurement, diagnostics & testing scripts
+│   ├── measure_vmax.py        ← V_max measurement (run on robot, lifted)
+│   ├── can_diag.py            ← CAN Bus Diagnostic Tool
+│   └── steering_test.py       ← Automated Steering Test
+└── from_steam_deck/           ← Steam Deck Control UI and logic
+    └── gg_vehicle/
+        ├── vehicle_gui.py     ← Steam Deck graphical interface
+        ├── vehicle_logic.py   ← Steam Deck vehicle controller logic layer
+        └── setup_vehicle_gui.sh ← Setup script for the GUI
 ```
 
 ## Quick Start

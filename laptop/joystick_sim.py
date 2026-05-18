@@ -29,7 +29,7 @@ import termios
 #  Configuration                                                       #
 # ================================================================== #
 
-ROBOT_IP   = "192.168.1.100"   # override with argv[1]
+ROBOT_IP   = "192.168.120.20"   # override with argv[1]
 ROBOT_PORT = 8888
 SEND_HZ    = 50
 

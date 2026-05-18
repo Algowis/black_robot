@@ -34,7 +34,7 @@ MAX_ACCEL        = 0.16          # m/s² — Slew rate limit (Super slow: takes 
 V_PIVOT          = 0.2           # m/s  — below this: pivot mode (no centrifugal)
 V_BLEND_END      = 1.0           # m/s  — above this: full dynamic anti-rollover
 DEADZONE         = 0.05          # joystick dead-band threshold
-GLOBAL_LIMIT_PCT = 0.5          # Hard cap to output 250/1000 max for floor testing
+GLOBAL_LIMIT_PCT = 0.50         # Hard cap: ±500/1000 CAN units max
 
 
 class SteeringController:

@@ -74,3 +74,14 @@ FAULT_WARNING  = 1           # Starting to get hot
 FAULT_DEGRADED = 2           # Performance reduced
 FAULT_STOPPING = 3           # Initiating stop
 FAULT_STOPPED  = 4           # Fully stopped (Critical)
+
+
+# ==============================================================================
+# 5. Optimus GCS Network Configuration
+# ==============================================================================
+# The Optimus GCS machine that runs vehicle_gui.py.
+# The Jetson sends heartbeat packets here so the GUI shows CONNECTED status,
+# battery voltage, gear state and servo echo.
+OPTIMUS_GCS_IP   = "192.168.120.169"   # Optimus GCS machine IP
+HEARTBEAT_PORT   = 5005                 # Port vehicle_gui.py listens on (VehicleController)
+HEARTBEAT_HZ     = 5                    # Emit rate (5 Hz is sufficient for the GUI 30fps refresh)

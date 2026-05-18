@@ -34,6 +34,7 @@ from udp_receiver import UDPReceiver
 from can_telemetry import CANTelemetry
 from can_transmitter import CANTransmitter
 from steering import SteeringController
+from heartbeat_emitter import HeartbeatEmitter
 
 
 # ================================================================== #
@@ -226,6 +227,10 @@ def main():
 
         telem = CANTelemetry(bus, state)
         telem.start()
+
+        # 5. Heartbeat emitter — sends status back to Optimus GCS (vehicle_gui.py)
+        hb_emitter = HeartbeatEmitter(state)
+        hb_emitter.start()
 
         transmitter = CANTransmitter(bus, send_to_rear=SEND_TO_REAR)
 
