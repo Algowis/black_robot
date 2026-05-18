@@ -115,22 +115,35 @@ class ROS2DriveBridge(Node):
             gear  = self._gear
             speed = self._speed
 
-        # ── Throttle: direction from gear, magnitude from throttle field ── #
+        steer = _clamp(msg.steering / 100.0, -1.0, 1.0)
         throttle_norm = msg.throttle / 255.0
 
-        if gear == Gear.FORWARD:
-            drive = throttle_norm * speed
-        elif gear == Gear.REVERSE:
-            drive = -throttle_norm * speed
+        if gear in (Gear.NEUTRAL, Gear.PARKING) or throttle_norm < 0.01:
+            # ── Mode 1: Pivot in place (No throttle applied) ──────────────── #
+            # Throttle is ignored. Steer stick controls rotation speed/direction.
+            # Jetson receives drive=0, full steer → pure differential pivot.
+            throttle_pwm = _SERVO_NEUTRAL
+            steer_pwm    = int(_clamp(_SERVO_NEUTRAL + steer * 500, _SERVO_MIN, _SERVO_MAX))
+
         else:
-            drive = 0.0             # NEUTRAL / PARKING → stop
+            # ── Mode 2: Bounded skid-steer arc turn ───────────────────────── #
+            # Outer motor maintains base drive speed.
+            # Inner motor reverses proportionally to steer to overcome track friction.
+            direction = 1.0 if gear == Gear.FORWARD else -1.0
+            drive = direction * throttle_norm * speed
+            
+            if steer > 0:
+                raw_l = drive
+                raw_r = drive - 2.0 * steer * drive
+            else:
+                raw_l = drive + 2.0 * steer * drive
+                raw_r = drive
+                
+            drive_input = (raw_l + raw_r) / 2.0
+            steer_input = (raw_l - raw_r) / 2.0
 
-        # ── Steering: -100..+100 → -1..+1, keep at full scale ─────────── #
-        steer = _clamp(msg.steering / 100.0, -1.0, 1.0)
-
-        # ── Convert to PWM ─────────────────────────────────────────────── #
-        throttle_pwm = int(_clamp(_SERVO_NEUTRAL + drive * 500, _SERVO_MIN, _SERVO_MAX))
-        steer_pwm    = int(_clamp(_SERVO_NEUTRAL + steer * 500, _SERVO_MIN, _SERVO_MAX))
+            throttle_pwm = int(_clamp(_SERVO_NEUTRAL + drive_input * 500, _SERVO_MIN, _SERVO_MAX))
+            steer_pwm    = int(_clamp(_SERVO_NEUTRAL + steer_input * 500, _SERVO_MIN, _SERVO_MAX))
 
         pkt = self._build_packet(throttle_pwm, steer_pwm)
         self._sock.sendto(pkt, (UDP_HOST, UDP_PORT))

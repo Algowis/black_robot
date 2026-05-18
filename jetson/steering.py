@@ -30,11 +30,12 @@ MAX_RPM = V_MAX * 60 / (2 * math.pi * WHEEL_RADIUS)  # ≈ 711 RPM
 # ================================================================== #
 
 A_LAT_MAX        = 3.0           # m/s² — max lateral accel before rollover risk
-MAX_ACCEL        = 0.16          # m/s² — Slew rate limit (Super slow: takes ~3s to reach 25%)
+MAX_ACCEL        = 2.0           # m/s² — Slew rate limit for acceleration & steering
+MAX_DECEL        = 5.0           # m/s² — Braking slew rate (fast stop, <0.5s from any speed)
 V_PIVOT          = 0.2           # m/s  — below this: pivot mode (no centrifugal)
 V_BLEND_END      = 1.0           # m/s  — above this: full dynamic anti-rollover
-DEADZONE         = 0.05          # joystick dead-band threshold
-GLOBAL_LIMIT_PCT = 0.50         # Hard cap: ±500/1000 CAN units max
+DEADZONE         = 0.005         # dead-band (ROS2 inputs need near-zero threshold)
+GLOBAL_LIMIT_PCT = 0.90         # Hard cap: ±900/1000 CAN units max
 
 
 class SteeringController:
@@ -48,7 +49,7 @@ class SteeringController:
 
     def __init__(self, v_max=V_MAX, track_width=TRACK_WIDTH,
                  wheel_radius=WHEEL_RADIUS, a_lat_max=A_LAT_MAX,
-                 max_accel=MAX_ACCEL, v_pivot=V_PIVOT,
+                 max_accel=MAX_ACCEL, max_decel=MAX_DECEL, v_pivot=V_PIVOT,
                  v_blend_end=V_BLEND_END, deadzone=DEADZONE,
                  global_limit_pct=GLOBAL_LIMIT_PCT,
                  loop_hz=50):
@@ -61,6 +62,7 @@ class SteeringController:
         # Algorithm params
         self.a_lat_max = a_lat_max
         self.max_accel = max_accel
+        self.max_decel = max_decel
         self.v_pivot = v_pivot
         self.v_blend_end = v_blend_end
         self.deadzone = deadzone
@@ -216,26 +218,30 @@ class SteeringController:
 
     def _slew_limit(self, target_left, target_right):
         """
-        Limit command change rate to MaxAccel m/s per second.
-        Applied independently to each side.
+        Asymmetric slew rate limiter.
+
+        Acceleration (speed increasing): MAX_ACCEL — smooth start.
+        Deceleration (speed decreasing toward zero): MAX_DECEL — fast stop.
+
+        Rule: if abs(target) < abs(previous), we are decelerating → use MAX_DECEL.
+        This ensures the robot stops in < 0.5 s from any speed while still
+        accelerating gently to avoid wheel spin.
         """
-        max_delta = self.max_accel * self.dt  # m/s per cycle
+        cmd_left  = self._apply_slew(target_left,  self._cmd_left_prev)
+        cmd_right = self._apply_slew(target_right, self._cmd_right_prev)
 
-        # Left
-        delta_left = target_left - self._cmd_left_prev
-        delta_left = max(-max_delta, min(max_delta, delta_left))
-        cmd_left = self._cmd_left_prev + delta_left
-
-        # Right
-        delta_right = target_right - self._cmd_right_prev
-        delta_right = max(-max_delta, min(max_delta, delta_right))
-        cmd_right = self._cmd_right_prev + delta_right
-
-        # Store for next cycle
-        self._cmd_left_prev = cmd_left
+        self._cmd_left_prev  = cmd_left
         self._cmd_right_prev = cmd_right
 
         return cmd_left, cmd_right
+
+    def _apply_slew(self, target: float, prev: float) -> float:
+        """Apply asymmetric slew to a single motor command (in m/s)."""
+        decelerating = abs(target) < abs(prev)
+        rate = self.max_decel if decelerating else self.max_accel
+        max_delta = rate * self.dt
+        delta = max(-max_delta, min(max_delta, target - prev))
+        return prev + delta
 
     # ------------------------------------------------------------------ #
     #  Internal — Stage 6: Velocity → CAN Throttle                       #
