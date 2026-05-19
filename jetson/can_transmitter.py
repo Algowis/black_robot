@@ -49,17 +49,21 @@ class CANTransmitter:
             throttle_right: int, -1000..+1000
         """
         # Clamp to valid range
-        throttle_left  = int(max(-1000, min(1000, throttle_left)))
-        throttle_right = int(max(-1000, min(1000, throttle_right)))
+        throttle_left  = int(max(-999, min(999, throttle_left)))
+        throttle_right = int(max(-999, min(999, throttle_right)))
 
         # Determine mode
-        # Speed: 0x01 (Brake ON) is required for skid-steer precision.
-        # Torque: 0x02 (Torque mode)
+        # - Torque mode: 0x02 (braking ON)
+        # - Driving (throttle != 0): 0x05 Speed + Braking OFF
+        #   (braking OFF prevents motor controller fighting itself during differential turns)
+        # - Stopped (throttle == 0): 0x01 Speed + Braking ON
+        #   (active braking holds the robot in place on slopes)
         if torque_mode:
             motor_mode = MODE_TORQUE_BRAKE_ON
             limit_val = 1500  # In torque mode, Limit field is max RPM
         else:
-            motor_mode = MODE_SPEED_BRAKE_OFF
+            stopped = (throttle_left == 0 and throttle_right == 0)
+            motor_mode = MODE_SPEED_BRAKE_ON if stopped else MODE_SPEED_BRAKE_OFF
             limit_val = TORQUE_LIMIT  # In speed mode, Limit field is max Torque(nM)
 
         # Pack payload — BIG-ENDIAN (motor controller uses Motorola byte order)
@@ -97,8 +101,8 @@ class CANTransmitter:
             throttle_pwm: int, 1000-2000 (center 1500)
             front_pwm:    int, 1000-2000 (center 1500)
         """
-        left_cmd  = int(max(-1000, min(1000, (front_pwm - 1500) * 2)))
-        right_cmd = int(max(-1000, min(1000, (throttle_pwm - 1500) * 2)))
+        left_cmd  = int(max(-999, min(999, (front_pwm - 1500) * 2)))
+        right_cmd = int(max(-999, min(999, (throttle_pwm - 1500) * 2)))
         self.send_drive_command(left_cmd, right_cmd)
 
     # ------------------------------------------------------------------ #
