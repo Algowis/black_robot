@@ -162,6 +162,18 @@ class SteeringController:
         # ============================================================ #
         #  Stage 5 — Slew Rate Limiter                                  #
         # ============================================================ #
+        # Auto-reset when entering pivot from forward/backward motion.
+        # If targets are opposite-sign (pivot) but prev commands were
+        # same-sign (e.g. both forward after burst), clear the slew state
+        # so the pivot starts immediately without bleeding off momentum.
+        entering_pivot = (
+            target_left * target_right < 0          # targets: opposite directions
+            and self._cmd_left_prev * self._cmd_right_prev >= 0  # prev: same direction
+            and abs(self._cmd_left_prev) > 0.05     # had meaningful momentum
+        )
+        if entering_pivot:
+            self.reset()
+
         cmd_left, cmd_right = self._slew_limit(target_left, target_right)
 
         # ============================================================ #

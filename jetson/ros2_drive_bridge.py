@@ -16,9 +16,11 @@ Usage (inside container):
 """
 
 import argparse
+import enum
 import socket
 import struct
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -37,7 +39,15 @@ _SERVO_MIN        = 1000
 _SERVO_MAX        = 2000
 _DEFAULT_SPEED    = 0.30     # 30% of max speed on start (D-pad tunes it live)
 _PIVOT_SCALE      = 0.90     # pivot in-place uses 90% power (independent of --speed)
+_PIVOT_BURST_SECS = 0.5      # forward burst duration before pivot executes
 _X25_INIT         = 0xFFFF
+
+
+class PivotState(enum.Enum):
+    """States for the pre-pivot burst state machine."""
+    IDLE     = 0   # no pivot input
+    BURST    = 1   # driving in gear direction before pivot
+    PIVOTING = 2   # actual pivot rotation
 
 VEHICLE_ID        = 120
 DRIVE_TOPIC       = f"/vehicle_{VEHICLE_ID}/drive_control"
@@ -85,6 +95,10 @@ class ROS2DriveBridge(Node):
         self._lock   = threading.Lock()
         self._sock   = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
+        # Pre-pivot burst state machine
+        self._pivot_state   = PivotState.IDLE
+        self._pivot_burst_t0 = 0.0
+
         cb_drive = MutuallyExclusiveCallbackGroup()
         cb_gear  = MutuallyExclusiveCallbackGroup()
 
@@ -119,28 +133,69 @@ class ROS2DriveBridge(Node):
         steer = _clamp(msg.steering / 100.0, -1.0, 1.0)
         throttle_norm = msg.throttle / 255.0
 
+        pivot_condition = (
+            gear not in (Gear.NEUTRAL, Gear.PARKING)
+            and throttle_norm < 0.01
+            and abs(steer) > 0.01
+        )
+
         if gear in (Gear.NEUTRAL, Gear.PARKING) or throttle_norm < 0.01:
-            # ── Mode 1: Pivot in place (No throttle applied) ──────────────── #
-            # Throttle is ignored. Steer stick controls rotation speed/direction.
-            # We scale the pivot speed by the --speed flag so it isn't too aggressive.
-            throttle_pwm = _SERVO_NEUTRAL
-            steer_pwm    = int(_clamp(_SERVO_NEUTRAL + (steer * _PIVOT_SCALE) * 500, _SERVO_MIN, _SERVO_MAX))
+            # ── Pivot branch: state machine decides burst vs. actual pivot ─── #
+            now = time.monotonic()
+
+            if not pivot_condition:
+                # Steer released or gear neutral — cancel everything
+                if self._pivot_state != PivotState.IDLE:
+                    self.get_logger().info("[PIVOT] → IDLE (steer released)")
+                self._pivot_state = PivotState.IDLE
+
+            elif self._pivot_state == PivotState.IDLE:
+                # First frame: start burst from beginning
+                self._pivot_state    = PivotState.BURST
+                self._pivot_burst_t0 = now
+                self.get_logger().info("[PIVOT] → BURST start")
+
+            elif self._pivot_state == PivotState.BURST:
+                if now - self._pivot_burst_t0 >= _PIVOT_BURST_SECS:
+                    # Burst complete — transition to actual pivot
+                    self._pivot_state = PivotState.PIVOTING
+                    self.get_logger().info("[PIVOT] → PIVOTING")
+
+            # Generate PWM based on current pivot state
+            if self._pivot_state == PivotState.BURST:
+                # Drive in gear direction at current speed setting
+                direction    = 1.0 if gear == Gear.FORWARD else -1.0
+                burst_drive  = direction * speed
+                throttle_pwm = int(_clamp(_SERVO_NEUTRAL + burst_drive * 500,
+                                          _SERVO_MIN, _SERVO_MAX))
+                steer_pwm    = _SERVO_NEUTRAL
+
+            elif self._pivot_state == PivotState.PIVOTING:
+                # Actual pivot: opposite tracks
+                throttle_pwm = _SERVO_NEUTRAL
+                steer_pwm    = int(_clamp(_SERVO_NEUTRAL + (steer * _PIVOT_SCALE) * 500,
+                                          _SERVO_MIN, _SERVO_MAX))
+
+            else:
+                # IDLE (no steer): neutral output
+                throttle_pwm = _SERVO_NEUTRAL
+                steer_pwm    = _SERVO_NEUTRAL
 
         else:
             # ── Mode 2: Bounded skid-steer arc turn ───────────────────────── #
             # Outer motor maintains base drive speed.
             # Inner motor reduces proportionally down to 0 at full steer.
-            # (Matches developer's example: 50 Left, 100 Right for a left turn)
+            self._pivot_state = PivotState.IDLE   # reset pivot if throttle applied
             direction = 1.0 if gear == Gear.FORWARD else -1.0
             drive = direction * throttle_norm * speed
-            
+
             if steer > 0:
                 raw_l = drive
                 raw_r = drive * (1.0 - abs(steer))
             else:
                 raw_l = drive * (1.0 - abs(steer))
                 raw_r = drive
-                
+
             drive_input = (raw_l + raw_r) / 2.0
             steer_input = (raw_l - raw_r) / 2.0
 
