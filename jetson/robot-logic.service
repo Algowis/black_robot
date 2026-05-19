@@ -13,12 +13,16 @@
 
 [Unit]
 Description=Black Robot Vehicle Controller
-After=network.target
+After=network.target can0-up.service
+Requires=can0-up.service
 
 [Service]
 Type=simple
 User=nvidia
 WorkingDirectory=/home/nvidia/gg_vehicle
+# Wait for onboard_optimus container to finish its CAN bus init (onboard_startup.sh)
+# Without this delay, the container takes can0 down ~20s after boot, killing our socket.
+ExecStartPre=/bin/sleep 35
 ExecStart=/usr/bin/python3 /home/nvidia/gg_vehicle/main.py
 Restart=on-failure
 RestartSec=5

@@ -1,0 +1,14 @@
+[Unit]
+Description=Configure can0 at 500kbps for Black Robot drive bus
+After=network-pre.target
+Before=robot-logic.service docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/ip link set can0 down
+ExecStart=/sbin/ip link set can0 type can bitrate 500000 restart-ms 100
+ExecStart=/sbin/ip link set can0 up
+
+[Install]
+WantedBy=multi-user.target

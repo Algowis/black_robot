@@ -1,0 +1,25 @@
+[Unit]
+Description=Black Robot ROS2 Drive Bridge (inside onboard_optimus)
+After=docker.service onboard-optimus.service
+Requires=docker.service
+
+[Service]
+Type=simple
+# Wait up to 60s for the container to be fully running
+ExecStartPre=/bin/bash -c '\
+  for i in $(seq 1 30); do \
+    docker inspect -f "{{.State.Running}}" onboard_optimus 2>/dev/null | grep -q true && exit 0; \
+    sleep 2; \
+  done; \
+  exit 1'
+# Copy latest bridge script into container (survives container restarts)
+ExecStartPre=/usr/bin/docker cp /home/nvidia/gg_vehicle/ros2_drive_bridge.py onboard_optimus:/ros2_drive_bridge.py
+ExecStart=/usr/bin/docker exec onboard_optimus bash -c \
+  'source /opt/ros/humble/setup.bash && source /backend/install/setup.bash && ROS_DOMAIN_ID=1 python3 /ros2_drive_bridge.py --speed 0.20 >> /tmp/bridge_output.txt 2>&1'
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

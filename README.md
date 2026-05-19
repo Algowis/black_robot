@@ -1,7 +1,7 @@
 # Black Robot — Teleoperation System
 
 Skid-steer UGV (Unmanned Ground Vehicle) controlled via the Optimus GCS platform.
-Uses a 6-stage steering algorithm, CAN motor control, and the Optimus ROS2 teleoperation stack.
+Uses a developer-specified differential steering algorithm, CAN motor control, and the Optimus ROS2 teleoperation stack.
 
 ---
 
@@ -16,7 +16,7 @@ Uses a 6-stage steering algorithm, CAN motor control, and the Optimus ROS2 teleo
 
 ---
 
-## System Architecture (Current)
+## System Architecture
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -32,15 +32,13 @@ Uses a 6-stage steering algorithm, CAN motor control, and the Optimus ROS2 teleo
 │                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │  Docker: onboard_optimus  (ProntoController + ROS2 onboard)     │   │
-│  │    ↓ subscribes to drive_control, gear_control                  │   │
-│  │    ↓                                                            │   │
-│  │  ros2_drive_bridge.py  ────── UDP port 8888 ──────────────────► │   │
+│  │    ros2_drive_bridge.py  ── UDP port 8888 ──────────────────►   │   │
 │  └─────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │  main.py  (host, ~/gg_vehicle/)                                 │   │
 │  │    udp_receiver.py  ◄── port 8888                               │   │
-│  │    steering.py      (6-stage skid-steer algorithm)              │   │
+│  │    steering.py      (differential steering algorithm)           │   │
 │  │    can_transmitter.py ──── CAN bus (can0, 500kbps) ──────────── ┤   │
 │  │    can_telemetry.py   ◄─── CAN bus                              │   │
 │  │    heartbeat_emitter.py ── UDP port 5005 ──────────────────────►│   │
@@ -52,16 +50,55 @@ Uses a 6-stage steering algorithm, CAN motor control, and the Optimus ROS2 teleo
 
 ---
 
-## Startup Sequence
+## Auto-Start on Boot
 
-Three processes must run, in this order:
+All three processes start **automatically on Jetson boot** via systemd. No manual intervention is needed.
 
-### 1. Jetson — main.py (host)
+| Service | What it runs | Auto-starts |
+|---|---|---|
+| `can0-up.service` | Brings `can0` up at 500kbps | ✅ Boot |
+| `robot-logic.service` | Runs `main.py` on host (35s delay — waits for container CAN init) | ✅ After `can0-up` |
+| `bridge-startup.service` | Copies + runs `ros2_drive_bridge.py --speed 0.20` inside `onboard_optimus` | ✅ After `onboard-optimus` |
+
+> ⚠️ **Important:** `robot-logic` has a 35-second startup delay. This is intentional — the `onboard_optimus` container's startup script (`onboard_startup.sh`) reconfigures `can0` ~20s after boot. Without the delay, `main.py` opens the CAN socket before the container resets it, causing `[Errno 100] Network is down` errors.
+
+### Service Management
 
 ```bash
-ssh nvidia@192.168.120.20
-# password: Q1w2as34
+# Check status
+sudo systemctl status robot-logic
+sudo systemctl status bridge-startup
+sudo systemctl status can0-up
 
+# Live logs
+sudo journalctl -u robot-logic -f
+sudo journalctl -u bridge-startup -f
+
+# Restart manually (e.g. after a code update)
+sudo systemctl restart robot-logic
+sudo systemctl restart bridge-startup
+
+# Check bridge is running inside container
+docker exec onboard_optimus ps aux | grep ros2_drive
+docker exec onboard_optimus cat /tmp/bridge_output.txt
+```
+
+---
+
+## Manual Startup (if needed)
+
+### 1. Bring up CAN bus
+
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 500000
+sudo ip link set can0 up
+```
+
+### 2. Start main.py on Jetson host
+
+```bash
+ssh nvidia@192.168.120.20   # password: Q1w2as34
 cd ~/gg_vehicle
 python3 main.py
 ```
@@ -69,39 +106,52 @@ python3 main.py
 Expected output:
 ```
 [UDP] Listening for Steam Deck on port 8888...
-[CAN] Bus initialised: can0 @ 500000 bps
+[INIT] can0 up at 500000 bps
 [HB EMIT] Heartbeat → 192.168.120.169:5005 at 5 Hz
 [READY] All systems go.
 ```
 
-### 2. Jetson — ROS2 Drive Bridge (inside Docker container)
-
-Open a second SSH session to the Jetson:
+### 3. Start bridge inside Docker container
 
 ```bash
-ssh nvidia@192.168.120.20
-# password: Q1w2as34
-
 docker exec -it onboard_optimus bash
-
-# Inside the container:
-export ROS_DOMAIN_ID=1
-python3 /ros2_drive_bridge.py
+source /opt/ros/humble/setup.bash
+source /backend/install/setup.bash
+ROS_DOMAIN_ID=1 python3 /ros2_drive_bridge.py --speed 0.20
 ```
 
 Expected output:
 ```
-Bridge started — /vehicle_120/drive_control + /vehicle_120/gear_control → UDP 127.0.0.1:8888  speed=30%
+Bridge started — /vehicle_120/drive_control + /vehicle_120/gear_control → UDP 127.0.0.1:8888  speed=20%
 ```
 
-Optional — adjust speed limit (D-pad also adjusts live):
+---
+
+## Deployment (copy files to Jetson)
+
 ```bash
-python3 /ros2_drive_bridge.py --speed 0.50   # 50% max speed
+# From your laptop, inside this repo:
+
+# Deploy Jetson host files
+sshpass -p 'Q1w2as34' scp \
+  jetson/main.py jetson/steering.py jetson/can_transmitter.py \
+  jetson/can_telemetry.py jetson/udp_receiver.py jetson/shared_state.py \
+  jetson/robot_config.py jetson/heartbeat_emitter.py \
+  nvidia@192.168.120.20:/home/nvidia/gg_vehicle/
+
+# Deploy bridge (host copy — bridge-startup.service copies it into container on restart)
+sshpass -p 'Q1w2as34' scp \
+  jetson/ros2_drive_bridge.py \
+  nvidia@192.168.120.20:/home/nvidia/gg_vehicle/ros2_drive_bridge.py
+
+# Restart main.py and bridge to pick up changes
+sshpass -p 'Q1w2as34' ssh nvidia@192.168.120.20 "
+  sudo systemctl restart robot-logic &&
+  sudo systemctl restart bridge-startup
+"
 ```
 
-### 3. Optimus GCS — already running
-
-The Optimus GCS software starts automatically. The `onboard_optimus` Docker container also starts automatically on the Jetson at boot.
+> **Note:** The bridge script is automatically copied from `/home/nvidia/gg_vehicle/ros2_drive_bridge.py` into the container each time `bridge-startup.service` starts. You only need to SCP to the host.
 
 ---
 
@@ -112,95 +162,36 @@ The Optimus GCS software starts automatically. The `onboard_optimus` Docker cont
 | **D-Pad Up** | Gear → **Forward** |
 | **D-Pad Down** | Gear → **Reverse** |
 | **D-Pad Centre** | Gear → **Neutral** (stops) |
-| **Throttle axis** | Speed (proportional) |
-| **Steering axis** | Left / Right |
-| **D-Pad Left/Right** | Speed cap −5% / +5% (default 30%) |
+| **Throttle axis** | Speed (proportional, capped by `--speed`) |
+| **Steering axis** | Left / Right differential |
+| **D-Pad Left/Right** | Speed cap −5% / +5% (default 20%) |
 
 > ⚠️ Robot will **not move** while in Neutral gear regardless of throttle input.
 
 ---
 
-## Telemetry (Heartbeat → GCS)
+## Steering Algorithm
 
-`main.py` sends a heartbeat packet at 5 Hz to the GCS on port `5005`.
-The Optimus `vehicle_gui.py` (if running) will show:
+### Pivot (no throttle)
 
-| HUD field | Source |
+When throttle = 0 and steer stick is deflected:
+- Both tracks spin in opposite directions
+- Power = **90%** (`_PIVOT_SCALE = 0.90`), independent of `--speed`
+
+### Arc Turn (throttle + steer)
+
+Developer-specified differential model:
+
+| Parameter | Value |
 |---|---|
-| CONNECTED (green dot) | Heartbeat received |
-| Voltage | CAN power telemetry (`shared_state.battery_voltage`) |
-| GEAR: LOW/HIGH | `shared_state.gear_low` |
-| THR / FNT bars | Echo of last received PWM values |
+| Outer wheel | Stays at current drive speed |
+| Minimum differential | **200 CAN units** (applied as soon as steer is deflected) |
+| Maximum differential | **600 CAN units** (at full stick) |
+| Inner wheel floor | Max `−50%` of outer speed (prevents reversal) |
 
----
-
-## Project Structure
-
-```
-black_robot/
-├── README.md                       ← This file
-├── docs/
-│   ├── ARCHITECTURE.md             ← System design & 6-stage steering spec
-│   ├── MEASUREMENTS.md             ← Physical robot measurements
-│   ├── CAN Command V0.1.pdf        ← Motor controller CAN protocol
-│   └── skid_steer_spec.docx.pdf    ← Steering algorithm specification
-├── jetson/                         ← Runs on the Jetson (host, not Docker)
-│   ├── main.py                     ← Entry point — orchestrates all subsystems
-│   ├── heartbeat_emitter.py        ← Sends status packets to Optimus GCS (port 5005)
-│   ├── ros2_drive_bridge.py        ← Runs INSIDE onboard_optimus container
-│   ├── steering.py                 ← 6-stage skid-steer algorithm
-│   ├── can_transmitter.py          ← Sends DriveCommand CAN frames
-│   ├── can_telemetry.py            ← Reads speed/temp/power CAN telemetry
-│   ├── udp_receiver.py             ← Receives joystick commands via UDP :8888
-│   ├── shared_state.py             ← Thread-safe state container
-│   ├── robot_config.py             ← All tunable parameters & network config
-│   └── robot-logic.service         ← Systemd service file for main.py
-├── from_steam_deck/gg_vehicle/     ← Alternative: standalone PyQt5 GUI controller
-│   ├── vehicle_gui.py              ← Full camera + HUD dashboard (PyQt5)
-│   ├── vehicle_logic.py            ← VehicleController, GamepadManager
-│   └── setup_vehicle_gui.sh        ← Dependency installer
-├── reference/
-│   └── vehicle_controller.py       ← Legacy monolithic controller (archived)
-└── tools/
-    ├── measure_vmax.py             ← V_max measurement (robot lifted)
-    ├── can_diag.py                 ← CAN bus diagnostics
-    └── steering_test.py            ← Automated steering test
-```
-
----
-
-## Key Configuration (robot_config.py)
-
-```python
-OPTIMUS_GCS_IP  = "192.168.120.169"   # Heartbeat destination
-HEARTBEAT_PORT  = 5005                 # GCS listens here
-HEARTBEAT_HZ    = 5
-
-V_MAX           = 2.0                  # m/s at full throttle
-TRACK_WIDTH_M   = 0.50                 # wheel-centre to wheel-centre
-WHEEL_RADIUS_M  = 0.125
-```
-
-To change the speed limit permanently, edit `ros2_drive_bridge.py`:
-```python
-_DEFAULT_SPEED = 0.30   # 30% → change to 0.50 for 50%
-```
-Or pass `--speed 0.50` on launch.
-
----
-
-## Deployment (copy files to Jetson)
-
-```bash
-# From your laptop, inside this repo:
-sshpass -p 'Q1w2as34' scp jetson/main.py jetson/heartbeat_emitter.py \
-    jetson/robot_config.py jetson/ros2_drive_bridge.py \
-    nvidia@192.168.120.20:/home/nvidia/gg_vehicle/
-
-# Copy bridge into the running Docker container:
-sshpass -p 'Q1w2as34' ssh nvidia@192.168.120.20 \
-    "docker cp /home/nvidia/gg_vehicle/ros2_drive_bridge.py onboard_optimus:/"
-```
+**Example at 20% forward speed (outer = +200 CAN):**
+- Slight steer → inner = `0`
+- Full steer → inner = `−100` (capped at −50% of +200)
 
 ---
 
@@ -214,6 +205,93 @@ sshpass -p 'Q1w2as34' ssh nvidia@192.168.120.20 \
 | Front driver NodeID | `2` → CAN IDs: `0x302`, `0x312`, `0x2D2`, `0x322` |
 | Rear driver NodeID | `4` → CAN IDs: `0x304`, `0x314`, `0x2D4`, `0x324` |
 | DriveCommand frame | `0x300 + NodeID` — throttle L/R ±1000, mode byte, limit |
+| Motor mode | `0x05` = Speed mode, **braking OFF** |
+| Torque limit | `700 nM` (Limit field in Speed mode = max torque) |
+
+### DriveCommand Frame Format
+
+```
+Byte 0-1: ThrottleLeft   (int16, big-endian)  -1000..+1000
+Byte 2-3: ThrottleRight  (int16, big-endian)  -1000..+1000
+Byte 4:   MotorMode      (uint8)              0x05 = Speed, brake OFF
+Byte 5-6: Limit          (uint16, big-endian) 700 nM max torque
+Byte 7:   Reserved       (uint8)              0x00
+```
+
+**Example — 20% forward speed, brake OFF:**
+```
+00 C8 00 C8 05 02 BC 00
+│         │         │  └─ Reserved
+│         │         └──── 0x02BC = 700 nM
+│         └────────────── 0x05 = Speed + Brake OFF
+│    00 C8 = Right +200
+└──────── 00 C8 = Left +200
+```
+
+---
+
+## Key Configuration
+
+### `robot_config.py`
+
+```python
+TORQUE_LIMIT = 700        # nM — max torque in Speed mode (Limit field)
+V_MAX        = 2.0        # m/s at full throttle (±1000 CAN units)
+TRACK_WIDTH  = 0.585      # m — wheel centre to centre
+WHEEL_RADIUS = 0.1825     # m — radius
+```
+
+### `ros2_drive_bridge.py`
+
+```python
+_DEFAULT_SPEED = 0.20     # 20% max drive speed (override with --speed flag)
+_PIVOT_SCALE   = 0.90     # 90% power for pivot turns (independent of --speed)
+```
+
+### `steering.py`
+
+```python
+STEER_MIN_DIFF_CAN = 200  # Min differential to overcome track friction
+STEER_MAX_DIFF_CAN = 600  # Max differential at full stick
+DEADZONE           = 0.005 # Near-zero threshold for ROS2 inputs
+```
+
+---
+
+## Project Structure
+
+```
+black_robot/
+├── README.md
+├── docs/
+│   ├── ARCHITECTURE.md             ← System design & steering spec
+│   ├── MEASUREMENTS.md             ← Physical robot measurements
+│   ├── CAN Command V0.1.pdf        ← Motor controller CAN protocol
+│   └── skid_steer_spec.docx.pdf    ← Steering algorithm specification
+├── jetson/                         ← Runs on the Jetson
+│   ├── main.py                     ← Entry point — orchestrates all subsystems
+│   ├── steering.py                 ← Differential steering algorithm
+│   ├── can_transmitter.py          ← Sends DriveCommand CAN frames
+│   ├── can_telemetry.py            ← Reads speed/temp/power CAN telemetry
+│   ├── udp_receiver.py             ← Receives joystick commands via UDP :8888
+│   ├── shared_state.py             ← Thread-safe state container
+│   ├── robot_config.py             ← All tunable parameters & network config
+│   ├── heartbeat_emitter.py        ← Sends status packets to Optimus GCS
+│   ├── ros2_drive_bridge.py        ← Runs INSIDE onboard_optimus container
+│   ├── robot-logic.service         ← Systemd: auto-starts main.py (35s delay)
+│   ├── bridge-startup.service      ← Systemd: auto-starts bridge in container
+│   └── can0-up.service             ← Systemd: brings up can0 at boot
+├── laptop/
+│   └── joystick_ros_bridge.py      ← Alternative: laptop joystick → UDP bridge
+├── from_steam_deck/gg_vehicle/     ← Standalone PyQt5 GUI controller
+│   ├── vehicle_gui.py
+│   └── vehicle_logic.py
+├── reference/
+│   └── vehicle_controller.py       ← Legacy monolithic controller (archived)
+└── tools/
+    ├── can_diag.py                 ← CAN bus diagnostics
+    └── steering_test.py            ← Automated steering test
+```
 
 ---
 
@@ -222,31 +300,12 @@ sshpass -p 'Q1w2as34' ssh nvidia@192.168.120.20 \
 | Symptom | Cause | Fix |
 |---|---|---|
 | Robot doesn't move, throttle=0 in log | Gear is Neutral | Switch to Forward (D-Pad Up) |
-| `[STEER] Input D:+0.00` — no UDP | Bridge not running | Start `ros2_drive_bridge.py` inside container |
-| main.py CAN error on start | `can0` not up | `sudo ip link set can0 up type can bitrate 500000` |
-| GCS shows OFFLINE | Heartbeat not reaching GCS | Check firewall, confirm main.py running |
-| Motors stutter or lock | Fault level ≥ 3 | Check `[CAN FRONT POWER]` Fault field; power-cycle motors |
-| `MotorL: 102.0°C` | Thermistor open circuit | Hardware fault; sensor disconnected inside motor |
-
----
-
-## Systemd Service (Jetson)
-
-`main.py` can run automatically on boot:
-
-```bash
-sudo cp ~/gg_vehicle/robot-logic.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable robot-logic.service
-sudo systemctl start robot-logic.service
-```
-
-Daily commands:
-```bash
-sudo systemctl status robot-logic
-sudo journalctl -u robot-logic -f      # live logs
-sudo systemctl restart robot-logic
-```
-
-> ⚠️ The `ros2_drive_bridge.py` inside the Docker container is **not** auto-started yet.
-> Add it to the `onboard_optimus` Docker entrypoint or create a separate systemd service if needed.
+| `[STEER] Input D:+0.00` — no UDP | Bridge not running | `sudo systemctl restart bridge-startup` |
+| `[CAN TX ERROR] Network is down` | `can0` reset by container | Wait — 35s delay handles this. If persists: `sudo systemctl restart can0-up robot-logic` |
+| `ModuleNotFoundError: optimus_interfaces` | Bridge missing workspace source | Check `bridge-startup.service` sources `/backend/install/setup.bash` |
+| Bridge not in container after reboot | Container restarted, file lost | `bridge-startup.service` auto-copies from host. Check service status |
+| GCS shows OFFLINE | Heartbeat not reaching GCS | Check firewall, confirm `robot-logic` running |
+| Goes backward when steering | Inner wheel diff too large | Reduce `STEER_MAX_DIFF_CAN` in `steering.py` |
+| Robot won't pivot on ground | Torque too low | Increase `TORQUE_LIMIT` in `robot_config.py` (currently 700 nM) |
+| `MotorL: 102.0°C` | Thermistor open circuit | Hardware fault — launch with `--ignore-thermal` flag |
+| CAN TX buffer full spam | Too many frames with no ACK | Motor controllers off or CAN wiring issue |

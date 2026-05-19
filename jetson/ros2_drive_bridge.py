@@ -36,6 +36,7 @@ _SERVO_NEUTRAL    = 1500
 _SERVO_MIN        = 1000
 _SERVO_MAX        = 2000
 _DEFAULT_SPEED    = 0.30     # 30% of max speed on start (D-pad tunes it live)
+_PIVOT_SCALE      = 0.90     # pivot in-place uses 90% power (independent of --speed)
 _X25_INIT         = 0xFFFF
 
 VEHICLE_ID        = 120
@@ -123,7 +124,7 @@ class ROS2DriveBridge(Node):
             # Throttle is ignored. Steer stick controls rotation speed/direction.
             # We scale the pivot speed by the --speed flag so it isn't too aggressive.
             throttle_pwm = _SERVO_NEUTRAL
-            steer_pwm    = int(_clamp(_SERVO_NEUTRAL + (steer * speed) * 500, _SERVO_MIN, _SERVO_MAX))
+            steer_pwm    = int(_clamp(_SERVO_NEUTRAL + (steer * _PIVOT_SCALE) * 500, _SERVO_MIN, _SERVO_MAX))
 
         else:
             # ── Mode 2: Bounded skid-steer arc turn ───────────────────────── #

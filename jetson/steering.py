@@ -37,6 +37,10 @@ V_BLEND_END      = 1.0           # m/s  — above this: full dynamic anti-rollov
 DEADZONE         = 0.005         # dead-band (ROS2 inputs need near-zero threshold)
 GLOBAL_LIMIT_PCT = 0.90         # Hard cap: ±900/1000 CAN units max
 
+# Developer steering spec — differential limits (CAN units)
+STEER_MIN_DIFF_CAN = 200   # Min L/R diff to overcome track friction
+STEER_MAX_DIFF_CAN = 600   # Max L/R diff at full stick
+
 
 class SteeringController:
     """
@@ -52,6 +56,8 @@ class SteeringController:
                  max_accel=MAX_ACCEL, max_decel=MAX_DECEL, v_pivot=V_PIVOT,
                  v_blend_end=V_BLEND_END, deadzone=DEADZONE,
                  global_limit_pct=GLOBAL_LIMIT_PCT,
+                 steer_min_diff_can=STEER_MIN_DIFF_CAN,
+                 steer_max_diff_can=STEER_MAX_DIFF_CAN,
                  loop_hz=50):
 
         # Physical params
@@ -68,6 +74,10 @@ class SteeringController:
         self.deadzone = deadzone
         self.global_limit_pct = global_limit_pct
         self.dt = 1.0 / loop_hz
+
+        # Developer steering: convert CAN units to m/s
+        self.steer_min_diff = steer_min_diff_can / 1000.0 * v_max
+        self.steer_max_diff = steer_max_diff_can / 1000.0 * v_max
 
         # Slew limiter state (in m/s units)
         self._cmd_left_prev = 0.0
@@ -109,30 +119,39 @@ class SteeringController:
         v_for_omega = max(abs(v_robot_actual), abs(v_target_drive))
 
         # ============================================================ #
-        #  Stage 2 — TurnAmount by Speed Zone                           #
+        #  Stages 2-4 — Developer Differential Steering                 #
         # ============================================================ #
-        turn_amount = self._compute_turn_amount(steer_cmd, v_for_omega)
+        if abs(steer_cmd) > 0 and abs(v_target_drive) > 1e-6:
+            # Arc steering: outer wheel stays at drive speed,
+            # inner wheel drops by min_diff..max_diff based on stick.
+            # Inner is clamped: never goes more negative than -steer_max_diff
+            # (prevents reversal when drive speed < diff at low throttle).
+            abs_steer = abs(steer_cmd)
+            diff_ms = (self.steer_min_diff
+                       + abs_steer * (self.steer_max_diff - self.steer_min_diff))
+            drive_sign = 1.0 if v_target_drive >= 0 else -1.0
 
-        # ============================================================ #
-        #  Stage 3 — Conflict Resolution                                #
-        # ============================================================ #
-        # Principle: preserve the turn, sacrifice linear speed.
-        peak_side = abs(v_target_drive) + abs(turn_amount)
-        if peak_side > self.v_max:
-            # Cap drive speed to make room for the turn
-            v_target_drive = math.copysign(
-                self.v_max - abs(turn_amount),
-                v_target_drive
-            )
+            # Inner floor: never more negative than -50% of outer speed.
+            # e.g. outer = +200 CAN → inner >= -100 CAN (no reversal).
+            inner_floor = -drive_sign * abs(v_target_drive) * 0.5
 
-        # ============================================================ #
-        #  Stage 4 — Per-Motor Targets                                  #
-        # ============================================================ #
-        # SteerCmd > 0 → right turn → left accelerates, right decelerates
-        target_left  = v_target_drive + turn_amount
-        target_right = v_target_drive - turn_amount
+            if steer_cmd > 0:  # right turn → right is inner
+                target_left  = v_target_drive
+                target_right = max(v_target_drive - drive_sign * diff_ms, inner_floor)
+            else:              # left turn → left is inner
+                target_left  = max(v_target_drive - drive_sign * diff_ms, inner_floor)
+                target_right = v_target_drive
+        else:
+            # Pure drive (no steer) or pure pivot (no throttle)
+            turn_amount = self._compute_turn_amount(steer_cmd, v_for_omega)
+            peak_side = abs(v_target_drive) + abs(turn_amount)
+            if peak_side > self.v_max:
+                v_target_drive = math.copysign(
+                    self.v_max - abs(turn_amount), v_target_drive)
+            target_left  = v_target_drive + turn_amount
+            target_right = v_target_drive - turn_amount
 
-        # Hard limit maximum physical speed (to prevent motor rattle > 700 output)
+        # Hard limit maximum physical speed
         max_permitted = self.v_max * self.global_limit_pct
         peak = max(abs(target_left), abs(target_right))
         if peak > max_permitted:

@@ -59,7 +59,7 @@ class CANTransmitter:
             motor_mode = MODE_TORQUE_BRAKE_ON
             limit_val = 1500  # In torque mode, Limit field is max RPM
         else:
-            motor_mode = MODE_SPEED_BRAKE_ON
+            motor_mode = MODE_SPEED_BRAKE_OFF
             limit_val = TORQUE_LIMIT  # In speed mode, Limit field is max Torque(nM)
 
         # Pack payload — BIG-ENDIAN (motor controller uses Motorola byte order)
